@@ -21,11 +21,14 @@ struct Light {
 	void setBrightnessSmooth(float brightness);
 };
 
+struct Wire;
+
 struct Input {
 	/** Voltage of the port, zero if not plugged in. Read-only by Module */
 	float value = 0.0;
 	/** Whether a wire is plugged in */
 	bool active = false;
+	Wire *wire = NULL;
 	Light plugLights[2];
 	/** Returns the value if a wire is plugged in, otherwise returns the given default value */
 	float normalize(float normalValue) {
@@ -38,6 +41,7 @@ struct Output {
 	float value = 0.0;
 	/** Whether a wire is plugged in */
 	bool active = false;
+	Wire *wire = NULL;
 	Light plugLights[2];
 };
 
@@ -63,7 +67,19 @@ struct Module {
 
 	/** Advances the module by 1 audio frame with duration 1.0 / gSampleRate */
 	virtual void step() {}
+	virtual void stepStream(const float *input, float *output, int numFrames) {}
 	virtual void onSampleRateChange() {}
+
+	std::vector<Module*> inputModules;
+	
+	/**
+	   Override this to handle the event that a module was added as an input.
+	   Example usage in src/core/AudioInterface.cpp enables AudioInterface to
+	   walk the modules connected to its inputs to render the audio using stepStream.
+	*/
+	void onModuleInput(Module *module) {
+		inputModules.push_back(module);
+	}
 
 	/** Override these to implement spacial behavior when user clicks Initialize and Randomize */
 	virtual void reset() {}

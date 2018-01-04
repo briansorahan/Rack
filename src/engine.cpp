@@ -219,6 +219,12 @@ void engineAddWire(Wire *wire) {
 		assert(wire2 != wire);
 		assert(!(wire2->inputModule == wire->inputModule && wire2->inputId == wire->inputId));
 	}
+	// Set the input's and output's reference to the wire (this allows us to traverse the connection graph).
+	// Then notify the downstream module that it has a new input.
+	wire->outputModule->outputs[wire->outputId].wire = wire;
+	wire->inputModule->inputs[wire->inputId].wire = wire;
+	wire->inputModule->onModuleInput(wire->outputModule);
+	
 	// Add the wire
 	wires.push_back(wire);
 	updateActive();

@@ -54,7 +54,13 @@ struct AudioInterface : Module {
 	}
 
 	void step() override;
+	void stepOld();
 	void stepStream(const float *input, float *output, int numFrames);
+	void stepStreamOld(const float *input, float *output, int numFrames);
+
+	// stepStreamFrom renders the stream starting at the given module.
+	// stepStream will call this recursively for each module in inputModules.
+	void stepStreamFrom(Module *module, const float *input, float *output, int numFrames);
 
 	int getDeviceCount();
 	std::string getDeviceName(int device);
@@ -145,8 +151,11 @@ struct AudioInterface : Module {
 	} \
 }
 
-
+// step intentionally doesn't do anything because I want to get rid of it.
 void AudioInterface::step() {
+}
+
+void AudioInterface::stepOld() {
 	// debug("inputBuffer %d inputSrcBuffer %d outputBuffer %d", inputBuffer.size(), inputSrcBuffer.size(), outputBuffer.size());
 	// Read/write stream if we have enough input, OR the output buffer is empty if we have no input
 	if (numOutputs > 0) {
@@ -187,20 +196,19 @@ void AudioInterface::step() {
 	}
 }
 
+// stepStream is the realtime callback that drives the audio thread for Rack.
+// We walk the list of modules that are connected to the output of AudioInterface.
 void AudioInterface::stepStream(const float *input, float *output, int numFrames) {
-	if (gPaused) {
-		memset(output, 0, sizeof(float) * numOutputs * numFrames);
-		return;
+	for (Module *module : inputModules) {
+		this->stepStreamFrom(module, input, output, numFrames);
 	}
+}
 
-	if (numOutputs > 0) {
-		// Wait for enough input before proceeding
-		TIMED_SLEEP_LOCK(inputSrcBuffer.size() >= numFrames, 100e-6, 0.2);
-	}
-	else if (numInputs > 0) {
-		TIMED_SLEEP_LOCK(outputBuffer.empty(), 100e-6, 0.2);
-	}
+void AudioInterface::stepStreamFrom(Module *module, const float *input, float *output, int numFrames) {
+}
 
+// stepStreamOld is the old-style callback, which doesn't call the modules' stepStream methods.
+void AudioInterface::stepStreamOld(const float *input, float *output, int numFrames) {
 	// input stream -> output buffer
 	if (numInputs > 0) {
 		Frame<8> inputFrames[numFrames];
