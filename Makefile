@@ -69,6 +69,11 @@ ifeq ($(ARCH), win)
 	env PATH=dep/bin:/mingw64/bin gdb -ex run ./Rack
 endif
 
+perf: $(TARGET)
+ifeq ($(ARCH), lin)
+	LD_LIBRARY_PATH=dep/lib perf record --call-graph dwarf ./Rack
+endif
+
 
 clean:
 	rm -rfv $(TARGET) build dist

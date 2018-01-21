@@ -265,7 +265,17 @@ void engineSetSampleRate(float newSampleRate) {
 	}
 }
 
+static int debugCount    = 0;
+static int debugInterval = 4096;
+
 float engineGetSampleRate() {
+	if (debugCount == debugInterval) {
+		debug("sample rate is %f", sampleRate);
+		debugCount = 0;
+	}
+	else {
+		debugCount++;
+	}
 	return sampleRate;
 }
 

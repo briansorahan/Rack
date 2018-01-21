@@ -11,7 +11,7 @@
 #include <RtAudio.h>
 #pragma GCC diagnostic pop
 
-
+#define DEBUG_INTERVAL 8
 
 using namespace rack;
 
@@ -37,14 +37,11 @@ struct AudioInterface : Module {
 	int numOutputs = 0;
 	int numInputs = 0;
 
-	SampleRateConverter<8> inputSrc;
-	SampleRateConverter<8> outputSrc;
+	int debugCount = 0;
 
-	// in rack's sample rate
-	DoubleRingBuffer<Frame<8>, 16> inputBuffer;
+	// In device's sample rate.
+	DoubleRingBuffer<Frame<8>, (1<<15)> inputBuffer;
 	DoubleRingBuffer<Frame<8>, (1<<15)> outputBuffer;
-	// in device's sample rate
-	DoubleRingBuffer<Frame<8>, (1<<15)> inputSrcBuffer;
 
 	AudioInterface() : Module(NUM_PARAMS, NUM_INPUTS, NUM_OUTPUTS) {
 		setDriver(RtAudio::UNSPECIFIED);
@@ -147,89 +144,50 @@ struct AudioInterface : Module {
 
 
 void AudioInterface::step() {
-	// debug("inputBuffer %d inputSrcBuffer %d outputBuffer %d", inputBuffer.size(), inputSrcBuffer.size(), outputBuffer.size());
-	// Read/write stream if we have enough input, OR the output buffer is empty if we have no input
-	if (numOutputs > 0) {
-		TIMED_SLEEP_LOCK(inputSrcBuffer.size() < blockSize, 100e-6, 0.2);
+	// Write a frame of input.
+	Frame<8> fin;
+	for (int i = 0; i < 8; i++) {
+		fin.samples[i] = inputs[AUDIO1_INPUT + i].value / 10.0;
 	}
-	else if (numInputs > 0) {
-		TIMED_SLEEP_LOCK(!outputBuffer.empty(), 100e-6, 0.2);
-	}
-
-	// Get input and pass it through the sample rate converter
-	if (numOutputs > 0) {
-		if (!inputBuffer.full()) {
-			Frame<8> f;
-			for (int i = 0; i < 8; i++) {
-				f.samples[i] = inputs[AUDIO1_INPUT + i].value / 10.0;
-			}
-			inputBuffer.push(f);
-		}
-
-		// Once full, sample rate convert the input
-		// inputBuffer -> SRC -> inputSrcBuffer
-		if (inputBuffer.full()) {
-			inputSrc.setRatio(sampleRate / engineGetSampleRate());
-			int inLen = inputBuffer.size();
-			int outLen = inputSrcBuffer.capacity();
-			inputSrc.process(inputBuffer.startData(), &inLen, inputSrcBuffer.endData(), &outLen);
-			inputBuffer.startIncr(inLen);
-			inputSrcBuffer.endIncr(outLen);
-		}
-	}
-
+	inputBuffer.push(fin); // Increments end of ring buffer.
+		
 	// Set output
-	if (!outputBuffer.empty()) {
-		Frame<8> f = outputBuffer.shift();
-		for (int i = 0; i < 8; i++) {
-			outputs[AUDIO1_OUTPUT + i].value = 10.0 * f.samples[i];
-		}
+	Frame<8> fout = outputBuffer.shift();
+	for (int i = 0; i < 8; i++) {
+		outputs[AUDIO1_OUTPUT + i].value = 10.0 * fout.samples[i];
 	}
 }
 
+// stepStream gets called in the rt audio thread.
 void AudioInterface::stepStream(const float *input, float *output, int numFrames) {
-	if (gPaused) {
-		memset(output, 0, sizeof(float) * numOutputs * numFrames);
-		return;
-	}
-
-	if (numOutputs > 0) {
-		// Wait for enough input before proceeding
-		TIMED_SLEEP_LOCK(inputSrcBuffer.size() >= numFrames, 100e-6, 0.2);
-	}
-	else if (numInputs > 0) {
-		TIMED_SLEEP_LOCK(outputBuffer.empty(), 100e-6, 0.2);
-	}
-
 	// input stream -> output buffer
-	if (numInputs > 0) {
-		Frame<8> inputFrames[numFrames];
-		for (int i = 0; i < numFrames; i++) {
-			for (int c = 0; c < 8; c++) {
-				inputFrames[i].samples[c] = (c < numInputs) ? input[i*numInputs + c] : 0.0;
-			}
+	Frame<8> inputFrames[numFrames];
+	for (int i = 0; i < numFrames; i++) {
+		for (int c = 0; c < 8; c++) {
+			inputFrames[i].samples[c] = (c < numInputs) ? input[i*numInputs + c] : 0.0;
 		}
-
-		// Pass output through sample rate converter
-		outputSrc.setRatio(engineGetSampleRate() / sampleRate);
-		int inLen = numFrames;
-		int outLen = outputBuffer.capacity();
-		outputSrc.process(inputFrames, &inLen, outputBuffer.endData(), &outLen);
-		outputBuffer.endIncr(outLen);
+		// TODO: write to output buffer.
 	}
 
 	// input buffer -> output stream
-	if (numOutputs > 0) {
-		for (int i = 0; i < numFrames; i++) {
-			Frame<8> f;
-			if (inputSrcBuffer.empty()) {
-				memset(&f, 0, sizeof(f));
-			}
-			else {
-				f = inputSrcBuffer.shift();
-			}
+	for (int i = 0; i < numFrames; i++) {
+		if (inputBuffer.size() >= numFrames) {
+			Frame<8> f = inputBuffer.shift();
+			
 			for (int c = 0; c < numOutputs; c++) {
 				output[i*numOutputs + c] = clampf(f.samples[c], -1.0, 1.0);
+			}
+		}
+		else {
+			// Rack can't keep up, so drop frames.
+			if (debugCount == DEBUG_INTERVAL) {
+				debug("dropping frame");
+				debugCount = 0;
+			} else {
+				debugCount++;
+			}
+			for (int c = 0; c < numOutputs; c++) {
+				output[i*numOutputs + c] = 0;
 			}
 		}
 	}
@@ -318,7 +276,6 @@ void AudioInterface::openStream() {
 			warn("Failed to open audio stream: %s", e.what());
 			return;
 		}
-
 		try {
 			debug("Starting audio stream %d", device);
 			stream->startStream();
@@ -364,9 +321,6 @@ void AudioInterface::closeStream() {
 	// Clear buffers
 	inputBuffer.clear();
 	outputBuffer.clear();
-	inputSrcBuffer.clear();
-	inputSrc.reset();
-	outputSrc.reset();
 }
 
 std::vector<float> AudioInterface::getSampleRates() {
